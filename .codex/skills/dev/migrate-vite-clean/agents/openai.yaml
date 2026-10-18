@@ -1,0 +1,4 @@
+interface:
+  display_name: "Migrate Vite Clean"
+  short_description: "Migrate dirty Vite code into a clean scoped Vite project."
+  default_prompt: "Use Migrate Vite Clean to migrate only the requested dirty Vite feature into the target Vite project, following backend data types and vite-realworld-rules."
