@@ -16,13 +16,16 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  *   SMALL / MEDIUM / HIGH → BASIC_MODEL (low / medium / high reasoning)
  *   ESCALATE              → PRO_MODEL   (high reasoning)
  *
+ * Jev runs through TypeSafe via pi's classifier registry (`typesafe/jev-latest`),
+ * authenticated with TYPESAFE_API_KEY. No OpenRouter dependency.
+ *
  * Every decision and every applied switch is recorded with `pi.appendEntry`, so
  * `scripts/audit_escalation.py` can prove, from the session JSONL, that the model
  * really changed. Jev failures never break a turn: the current model is kept.
  */
 
-const ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
-const JEV_MODEL = "typesafe/jev-1.13";
+const JEV_PROVIDER = "typesafe";
+const JEV_MODEL = "jev-latest";
 
 const MIN_CONF = (() => {
   const n = Number(process.env.JEV_MIN_CONFIDENCE ?? "0.7");
@@ -76,14 +79,13 @@ function parseRef(
   return undefined;
 }
 
-async function askRoute(prompt: string): Promise<RouteDecision | null> {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) return null;
-  const res = await fetch(ENDPOINT, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: JEV_MODEL,
+async function askRoute(ctx: any, prompt: string): Promise<RouteDecision | null> {
+  const jev = ctx.modelRegistry.findOfType("classifier", JEV_PROVIDER, JEV_MODEL);
+  if (!jev) return null;
+
+  const outcome = await ctx.modelRegistry.classify(
+    jev,
+    {
       state: { task: prompt },
       questions: {
         decision: {
@@ -93,11 +95,12 @@ async function askRoute(prompt: string): Promise<RouteDecision | null> {
           criteria: ROUTES,
         },
       },
-    }),
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!res.ok) return null;
-  const answer: any = (await res.json())?.answers?.decision;
+    },
+    { signal: AbortSignal.timeout(20_000) },
+  );
+  if (outcome.stopReason !== "stop") return null;
+
+  const answer: any = outcome.answers?.decision;
   if (answer?.type !== "choice" || !(answer.choice in ROUTES)) return null;
   const confidence = typeof answer.confidence === "number" ? answer.confidence : 0;
   const lane = answer.choice as Lane;
@@ -158,7 +161,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     if (!event.prompt.trim()) return;
     try {
-      const decision = await askRoute(event.prompt);
+      const decision = await askRoute(ctx, event.prompt);
       if (!decision) return;
       if (decision.withheld) {
         pi.appendEntry("jev-router", {
